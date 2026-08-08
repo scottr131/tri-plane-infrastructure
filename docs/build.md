@@ -1,5 +1,8 @@
+# Infrastructure
 
+## Static Mirror
 
+### Initial Download
 
 The first thing we need to do is create a static image of the Slackware-current mirror. Since the mirror updates as much as daily, we need a local static copy. Since we don't necessarily have a Slackware computer at this point, let's make this as OS agnostic as possible. Slackware can be downloaded with rsync. This should work on Windows (with WSL), Linux, or Mac OS.
 
@@ -7,7 +10,7 @@ The first thing we need to do is create a static image of the Slackware-current 
 rsync -havP --delete --delete-after  --no-o --no-g --safe-links  --timeout=60 --contimeout=30 --exclude "EFI/*" --exclude "extra/*" --exclude "pasture/*" --exclude "patches/*"  --exclude "source/*"  --exclude "testing/*" rsync://mirrors.kernel.org/slackware/slackware64-current /mnt/c/Users/user/Downloads/
 ```
 
-
+### Slackware Installer USB
 
 Since there is not infrastructure at this point, we need to create a USB flash drive to use to install Slackware onto the build node. To do this we need to write `slackware64-current/usb-and-pxe-installers/usbboot.img` to a USB drive. On a Unix-like OS, this can be done with `dd`. On Windows, this should probably be done with a program like Rufus.
 
@@ -15,19 +18,15 @@ Since there is not infrastructure at this point, we need to create a USB flash d
 dd if=usbboot.img of=/dev/sdb
 ```
 
+### Slackware Static Mirror USB
+
 You also need to copy the Slackware files to another USB flash drive. That drive can be formatted as FAT32 or ext4.
 
-
+## Build Node
 
 Now, boot the installer USB on the build node. My process for installing Slackware is documented elsewhere so that process won't be covered here. For the purposes of the build station, install package series a, ap, d, k, l, n, tcl, x, xap, and xfce. Choose the `terse` install option to install the default package set. On the build station, it's probably best to just install to one large ext4 partition as the build node should be considered disposable.
 
-!!
-NTFS or exfat should work as well since support is built into the Slackware installer.
-
-This NTFS or exfat (as well as FAST32 or ext4) support is for the Slackware files USB. The target OS partition should be ext4.
-!!
-
-
+### Cluster Administration Account
 
 Once the system is booted (or during install), you will need to create the cluster account. We'll call the cluster account `clusteradm` and use a UID of 1050. This will be consistent on all cluster members. This account will be used for Ansible and general cluster administration.
 
@@ -37,28 +36,29 @@ useradd -d /home/clusteradm -g users -u 1050 -m -s /bin/bash clusteradm
 ```
 
 In addiition, we need to grant `sudo` access to the `clusteradm` account. The path includes `go` - it is not yet installed, but will be soon. Edit `/etc/sudoers.d/clusteradm` as follows:
+
 ```
 #Defaults secure_path="/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin:/opt/go/bin"
 clusteradm ALL=(ALL:ALL) ALL
 ```
 
 Make sure to set a password on the clusteradm account.
+
 ```
 passwd clusteradm
 ```
 
-!!
-Stop for a moment here and compose a draft for me to download. That way is something happens to our context we have a place to restart. Once I have a copy, we'll pick up with the process again and continue to build out the process.
-!!
+### build-system
 
-
-
+#### Download
 
 Now that the OS install is complete, SSH into the build node as `clusteradm`. We need to install my custom build-system. The build-system is a script that sets up a local Jenkins and Semaphore instance.
 
-```bash 
+```bash
 git clone https://github.com/scottr131/build-system.git
 ```
+
+#### Configure
 
 Now, configure and start the build system. You will need to create a DNS wildcard record to your build server. *.<servername> should resolve to your build server.
 
@@ -76,6 +76,8 @@ cd build-system
 ./build-system.sh setup jenkins
 ```
 
+#### Start
+
 Next, start the reverse proxy and Jenkins. The reverse proxy requires `sudo` so that it can bind to port 443.
 
 ```bash
@@ -83,25 +85,28 @@ Next, start the reverse proxy and Jenkins. The reverse proxy requires `sudo` so 
 sudo ./build-system.sh start rp
 ```
 
+#### Jenkins Configuration
+
 After Jenkins starts it will generate an initial password. You can obtain that password for the next step with `cat /home/clusteradm/build-system/jenkins/secrets/initialAdminPassword`
 
 Finally, in a web browser, go to the Jenkins instance at `https://jenkins.<your-server>.<domain>`. You will recieve two certificate warnings because of self signed certificates. One is for the Authelia certficiate and one is for the Jenkins certificate. Bypass these errors and you should get an Authelia login page. Login with the reverse proxy account created earlier. Make sure to check "Remember me" if you are on your local LAN.
 
 Jenkins will prompt you for the initial passowrd that you obtained above. Jenkins will then prompt for what plugins you want to install. Choose "Install suggested plugins." Go ahead and create a "First Admin User" account in Jenkins once the plugin install is complete. On the next page, make sure the Jenkins URL is correct and save your configuration. Jenkins is now configured and we are (almost) ready to start building software.
 
-
 Slackbuilds need to run as root. Since our build system is disposable, we are going to temporarily allow `clusteradm` to sudo without a password. This is also a good time to add the path for Go if you did not add it earlier. Edit `/etc/sudoers.d/clusteradm`.
+
 ```
 Defaults secure_path="/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin:/opt/go/bin"
 clusteradm ALL=(ALL:ALL) NOPASSWD: ALL
 ```
+
 We can remove the "NOPASSWD:" tag after the software builds are complete.
+
+#### Build prerequisites
 
 Now, we need to add a job to build the "dev-tools". This includes packaging Go and JDK binaries as Slackware packages. These Go and JDK packages are needed to build other software. This is the basic process to create the job. It will only be documented here. Other jobs are similar.
 
 In Jenkins, click "+ New Item". Call the new item "dev-tools" and choose "Pipeline" as the type. The job will created. In the General configuration, under "Pipeline", set "Definition" to "Pipeline script from SCM". Set "SCM" to "Gitb" and repository URL to "https://github.com/scottr131/slackbuilds.git". Under "Branches to build" set "Branch Specifier" to `*/main`. Set "Script Path" to `dev-tools.Jenkinsfile`. Save the job and build it.
-
-
 
 The dev-tools do not install as part of the Jenkinsfile. To build the software needed for the cluster, we'll need to install Go and JDK 21 on the build node to build the rest of the software. 
 
@@ -114,6 +119,14 @@ cd ~build-system/jenkins/jobs/dev-tools/builds/<build number>/archive/
 sudo installpkg go-1.26.5-x86_64-1_SBo.txz temurin-jdk21-21.0.11+10-x86_64-1_SBo.txz
 ```
 
+The yarn build system also needs installed. Yarn can be installed via npm corepack. This is required for the incus-stack to build correctly.
+
+```
+sudo npm install -g corepack
+```
+
+#### Build Software Stacks
+
 Now, we can go back to Jenkins and build an install additional package "stacks". Next will be the management tools. Click " + New Item". Call the new item "mgmt-tools" and instead of choosing an item type, click "Duplicate and existing item." Type "dev-tools" and click OK. The job will created with the settings from dev-tools. Change "Script Path" to `mgmt-tools.Jenkinsfile`. Save the job and build it. Continue with these additional stacks. This is a recommended build order. Make sure Ceph is built before QEMU, otherwise the order isn't really important.
 
 storage-stack (LINSTOR, ZFS, DRBD)
@@ -124,21 +137,7 @@ qemu-stack (QEMU and support libraries)
 
 Note - Ceph takes about 90 minutes to build on a decent computer. You will need at least 16GB of RAM (probably more) to compile Ceph.
 
-!!
-Stop! Let's stop there and present me the draft to save off. I'm walking through this procedure as I feed you information about it. The software is compiling right now. The next part of the procedure is less built-out so steps may change after we add them.
-~~
-
-Resuming the information dump...
-
-There is a missing build prerequisite. After Go and JDK are installed, yarn also needs installed. Yarn can be installed via npm corepack. This is required for the incus-stack to build correctly.
-```
-sudo npm install -g corepack
-```
-
-
-
-
-
+### Incus on Build Node
 
 The next step is create a deployment node that will used to network boot and deploy software to the other nodes. The deployment node will be a virtual machine, so we need to get Incus running on the build node. To do this, we need to install the packages from qemu-stack and incus-stack.
 
@@ -151,6 +150,7 @@ sudo installpkg *.txz
 ```
 
 Install configuration files
+
 ```
 cd ~
 wget https://github.com/scottr131/linux/raw/refs/heads/main/slackware/etc/rc.d/rc.local
@@ -161,6 +161,7 @@ sudo chmod +x /etc/rc.d/rc.local /etc/rc.d/rc.incusd
 ```
 
 We also need to configure `incusd`. Create /etc/default/incusd with these contents:
+
 ```
 # Default options for the incus daemon:
 #
@@ -171,19 +172,21 @@ JAVA_HOME="/opt/java21"
 ```
 
 Then we need to create the Incus groups and subuid/subgid mappings.
+
 ```
 sudo groupadd -r -g 345 incus
 sudo groupadd -r -g 346 incus-admin
 echo "root:1000000:1000000000" | sudo tee -a /etc/subuid /etc/subgid
 ```
 
-
 Slackware defaults to cgroups v1. Incus needs cgroups v2. Edit `/etc/default/cgroups`
+
 ```
 CGROUPS_VERSION=2
 ```
 
 Finally, we need to create a local network bridge to allow the VMs to connect to the LAN. Edit `/etc/rc.d/rc.inet1.conf`. In most cases you can just add two lines to create a bridge on eth0.
+
 ```
 # IPv4 config options for eth0:
 IPADDRS[0]="10.1.31.18/24"
@@ -202,11 +205,6 @@ IFNAME[0]="br-lan"
 
 Reboot the build node so that the cgroups and networking changes can take effect. The build node should come up with `incusd` running.
 
-
-
-
-
-
 Now we need to configure Incus.
 
 ```bash
@@ -214,6 +212,7 @@ sudo incus admin init
 ```
 
 Below is a sample run. Settings may need adjusted per the environment.
+
 ```text
 Would you like to use clustering? (yes/no) [default=no]:
 Do you want to configure a new storage pool? (yes/no) [default=yes]:
@@ -231,6 +230,7 @@ Would you like a YAML "init" preseed to be printed? (yes/no) [default=no]:
 ```
 
 Verfiy network connectivity by configuring local user client.
+
 ```
 sudo incus config trust add localhost
 # incus will return a token
@@ -239,13 +239,17 @@ incus remote add localhost
 ```
 
 Verify server operation.
+
 ```
 incus remote switch localhost
 incus list
 # This should return an empty list of instances
 ```
 
+#### Deployment Node (VM)
+
 Create the VM and import the Slackware installer USB image.
+
 ```
 # Create the VM
 incus create --empty deploy --vm -s default -c limits.memory=4GiB -c limits.cpu=2 -d root,size=32GiB
@@ -259,9 +263,11 @@ incus config device set deploy installer boot.priority=10
 
 You will need to connect a remote Incus client or configure the web interface in order to see the VM console. Those are currently beyond the scope of this document.
 
-
+##### Install OS
 
 Connect the USB flash drive of Slackware files to the VM. Boot the VM and connect to the console. Install Slackware in a manner similar to the build node. This time only install package series a, ap, l, n, tcl, x, xap, and xfce from the `mini-gui` tagfiles. Configure the VM with a hostname of `deploy` and a static IP address appropriate for your LAN. Just as with the build node, you will need to create the cluster account `clusteradm`.
+
+##### Configure Deployment Node
 
 ```
 # As root, since there are no other accounts
@@ -269,26 +275,21 @@ useradd -d /home/clusteradm -g users -u 1050 -m -s /bin/bash clusteradm
 ```
 
 In addiition, we need to grant `sudo` access to the `clusteradm` account. The path includes `go` - it is not yet installed, but will be soon. Edit `/etc/sudoers.d/clusteradm` as follows:
+
 ```
 #Defaults secure_path="/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin:/opt/go/bin"
 clusteradm ALL=(ALL:ALL) ALL
 ```
 
 Make sure to set a password on the clusteradm account.
+
 ```
 passwd clusteradm
 ```
 
 Also, it's a good idea to configure an NTP server in `/etc/ntp.conf`. Shut down the VM, disconnect the virtual Slackware installer USB, leave your real Slackware files USB connected, and boot up the VM into the newly installed OS.
 
-
-
-!!
-Stop! Let's stop there and present me the draft to save off. We're at a working deployment VM. Tomorrow I'll feed you the process for setting up the deployment VM.
-~~
-
-
-Resuming the information dump...
+##### Copy Deployment Scripts
 
 Once you've confirmed the VM is working, shut it down. We need to add some files to the real Slackware files USB. Mount the USB on the host system then copy the autoinstall scripts and tagfiles to it. As root on the host system do something like:
 
@@ -303,14 +304,14 @@ cp /home/clusteradm/scripts/* /mnt/hd/scripts/
 umount /mnt/hd
 ```
 
+##### Create Deploy Directory Tree
+
 Restart the `deploy` instance (`incus start deploy`). The USB should be reconnected to the VM. SSH into the VM as clusteradm. Mount the Slackware files USB flash drive to /mnt/hd and prepare the files for network deployment. Network boot files will be stored in `/srv`. Slackware will be stored at `/srv/slackware/slackware64-current`, tagfiles at `/srv/slackware/tagsets`, `/srv/pxe` contains the boot binaries, `/srv/pxe/nodes` contains node-specific configuration files, and `/srv/tftp` contains the boot binaries to be served via TFTP by dnsmasq.
-
-
-
 
 The node-specific config directory is actually `/srv/pxe/nodes`. This document will have a companion repository that contains scripts and config files. The location is yet to be determined. For the moment, assume the Slackware flies USB drive contains a `scripts` directory with deployment related scripts and a `conf` directory that contains various configuration file templates.
 
 As `clusteradm`, create the directory tree and own it. Copy the scripts and tagsets off the USB.
+
 ```
 mkdir ~/scripts
 sudo mount /dev/sdb1 /mnt/hd
@@ -320,16 +321,18 @@ cp /mnt/hd/scripts/* ~/scripts/
 cp -R /mnt/hd/tagsets/* /srv/slackware/tagsets
 ```
 
+##### Copy Local Mirror
+
 Now we'll use rsync to copy the Slackware mirror. This same command can be used later to synchronize the Slackware mirror from a USB flash drive.
 
 ```
 rsync -havP --delete --delete-after  --no-o --no-g --safe-links  --timeout=60  --exclude "EFI/*" --exclude "extra/*" --exclude "pasture/*" --exclude "patches/*"  --exclude "source/*"  --exclude "testing/*" /mnt/hd/slackware64-current /srv/slackware
 ```
 
-
-
+##### Configure Network Boot
 
 Now we need to set up the iPXE files. These instructions don't currently include building iPXE. It should be added to a stack. As an aside, it can built on the build node with:
+
 ```
 git clone https://github.com/scottr131/slackbuilds.git
 cd slackbuilds
@@ -345,9 +348,11 @@ cp /mnt/hd/config/boot.ipxe /srv/pxe/
 
 Edit `/srv/pxe/boot.ipxe`. If you followed the paths in this document you usually will just need to change the line that starts with `set srv` to point to the LAN IP address of the `deploy` VM. Additional documentation is in the config file itself.
 
+##### Install build-system (for Caddy and Semaphore UI)
+
 Now we need to install the build-system. This is the easiest way to get a web server on the deploy node and we'll need build-system for Semaphore UI. We won't configure it at this point. As `clusteradm`:
 
-```bash 
+```bash
 cd ~
 # We can't git clone like build node because we don't have git
 wget https://github.com/scottr131/build-system/archive/refs/heads/main.zip
@@ -355,7 +360,9 @@ unzip main.zip
 mv build-system-main build-system
 ```
 
-Now, configure and start the build system. You will need to create a DNS wildcard record to your build server. *.<servername> should resolve to your build server.
+##### Configure Build System
+
+Now, configure the build system. 
 
 ```bash
 cd build-system
@@ -371,36 +378,42 @@ cd build-system
 # Setting up the reverse proxy extracts Caddy
 ```
 
+##### Configure HTTP boot server
+
 Make a local copy of the Caddyfile. We don't have a good place for it, so we'll put in the scripts directory for now.
+
 ```bash
 cp /mnt/hd/conf/caddy-pxe.conf ~/scripts/
 ```
 
 Verify `~/scripts/pxe-boot-server.sh` is correct for your system
+
 ```bash
 #!/bin/bash
 sudo  ~/build-system/bin/caddy run --adapter caddyfile --config caddy-pxe.conf
 ```
 
+##### Configure Proxy DHCP and TFTP via dnsmasq
+
 Verify `~/scripts/pxe-tftp-server.sh` is correct for your system
+
 ```bash
 #!/bin/bash
 sudo /usr/sbin/dnsmasq -C /etc/dnsmasq.d/pxe.conf -d
 ```
 
-
-
-
-
 We also need to copy the dnsmasq config. This can probably be combined with the steps that copy caddy-pxe.conf and boot.ipxe. 
+
 ```bash
 sudo cp /mnt/hd/config/pxe.conf /etc/dnsmasq.d/
 ```
 
-Edit `/etc/dnsmasq.d/pxe.conf` and make sure the settings are right for your LAN. The key settings are `interface=` and `dhcp-range`. dnsmsaq will proxyDHCP with your existing DHCP server and allow network boot (in most cases).
+Edit `/etc/dnsmasq.d/pxe.conf` and make sure the settings are right for your LAN. The key settings are `interface=`,  `dhcp-range=`, and `dhcp-boot=`. dnsmsaq will proxyDHCP with your existing DHCP server and allow network boot (in most cases). 
 
+##### Custom Installer
 
 Now we need to generate the custom Slackware installer image. This is automated with the `build-initrd.sh` script. Additional documentaiton is available inside the script.
+
 ```bash
 cd ~/scripts
 sudo ./build-initrd.sh
@@ -408,11 +421,16 @@ sudo ./build-initrd.sh
 # It takes a little bit of time to repack the image
 ```
 
+##### Configure NFS Exports
+
 Next, we need to set up NFS to serve the Slackware package mirror. Edit `/etc/exports` with the line
+
 ```
 /srv/slackware/slackware64-current   192.168.1.0/24(ro,sync,no_subtree_check,root_squash)
 ```
+
 Make sure to replace `192.168.1.0` with your LAN's address.  Enable and start NFS, then reload the exports (just in case).
+
 ```
 sudo chmod +x /etc/rc.d/rc.rpc /etc/rc.d/rc.nfsd
 sudo /etc/rc.d/rc.rpc start
@@ -420,26 +438,17 @@ sudo /etc/rc.d/rc.nfsd start
 sudo exportfs -ra
 ```
 
-
-
-!!
-Stop! Let's stop there and present me the draft to save off. I think we should have a working deployment VM. I'll do some testing. When we resume, I'll feed you any fixes. Then we might be ready to deploy the first node.
-~~
-
-
-
-Resuming the information dump...
-
-
-In `/etc/dnsmasq.d/pxe.conf`, the line with `dhcp-boot=` also needs modified to reflect the IP address of the deploy VM.
+##### Start Network Boot Server
 
 Set our pxe boot scripts to executable.
+
 ```bash
 cd ~/scripts
 chmod +x ~/scripts/pxe-boot-server.sh ~/scripts/pxe-tftp-server.sh
 ```
 
 Start the dnsmasq and caddy servers. This is best done in a tmux session.
+
 ```bash
 # In tmux
 ~/scripts/pxe-tftp-server.sh
@@ -447,7 +456,10 @@ Start the dnsmasq and caddy servers. This is best done in a tmux session.
 ~/scripts/pxe-boot-server.sh
 ```
 
+##### Node Specific Configuration
+
 Create a configuration file for the first cluster node - a networking node - `nnode1`. Edit `/srv/pxe/nodes/<mac addr>.cfg` where `<mac addr>` is the hypen-separated MAC address of the target node. ** Make sure you have a valid SSH pubkey in this file. This will be your only way into the target node **
+
 ```
 NODE_ROLE="compute"        # or "storage" �.. picks the OS disk + partition layout
 NODE_NAME="provisionn1"
@@ -462,10 +474,10 @@ DATA_PART_TYPE="zfs"
 TAG_URL="http://192.168.1.100/tagsets/mini-gui"
 ```
 
-
 Now it's time to boot the first node. Let's make this nnode1 - the first node of the networking cluster. This is a good place to start because the networking nodes have their primary network interface connected to the existing LAN. While configuring the nodes to network boot, it is also a good time to configure the firmware settings.
 
 Check these settings (terms will vary):
+
 - CSM: Disabled
 - Boot: UEFI Only
 - Secure Boot: Disabled (Slackware boot chain isn't signed)
@@ -480,12 +492,7 @@ Repeat this process with the other two network nodes. You could go ahead and ins
 
 The newly installed nodes should come up and grab an IP address from DHCP. You should be able to SSH into them from `deploy` by their hostnames (which should get registered automatically when the node obtains an IP). 
 
-
-
-
-
 Back on `deploy` we need to get Ansible and Semaphore running to start deploying software to the nodes.
-
 
 ```
 cd ~/build-system
@@ -546,13 +553,13 @@ You will be asked to create a new project in Semaphore. Instead, click the "Rest
 
 Test Semaphore with the "Execute Comamnd" task. Set "Target Hosts" to `pronvisionnode` and `pwd` as the command. All hosts should return /home/clusteradm.
 
-
-
 Now deploy the networking configuration tasks to the network nodes (currently in the `provisionnode` group)
+
 - Change Hostname
 - Deploy Dual NON-BOND Networking Configuration
 
 Since these are currently the only nodes in `provisionnode`, go ahead and deploy the following tasks too:
+
 - Enable Intel IOMMU (or optionally Enable AMD IOMMU if the node is AMD)
 - Deploy Ceph (QEMU was compiled with Ceph, so we need Ceph installed)
 - Deploy Incus
@@ -563,6 +570,7 @@ Since these are currently the only nodes in `provisionnode`, go ahead and deploy
 Now run the "Execute Command" task with `reboot` as the command, `provisionnode` as the target hosts, and set Run as root to Yes. This will reboot the nodes to apply the networking changes and the cgroups version change made by the Incus playbook.
 
 After the nodes reboot, SSH into `nnode1` and initialize Incus.
+
 ```
 sudo incus admin init
 ...
@@ -585,10 +593,10 @@ Would you like a YAML "init" preseed to be printed? (yes/no) [default=no]:
 # Create tokens for the other nodes
 incus cluster add nnode2
 incus cluster add nnode3
-
 ```
 
 Repeat the process on `nnode2` and `nnode3`.
+
 ```
 Would you like to use clustering? (yes/no) [default=no]: yes
 What IP address or DNS name should be used to reach this server? [default=192.168.130.53]: 10.168.1.53
@@ -601,7 +609,6 @@ Choose "source" property for storage pool "local": /dev/nvme0n1p3
 Would you like a YAML "init" preseed to be printed? (yes/no) [default=no]:
 ```
 
-
 Deploy the router instances on the networking cluster. This is currently done by restoring the backups. TODO - document the process of creating the router images.
 
 Remove the internal ethernet port from the trunk on the switch for each of the compute and cluster nodes. The LACP truck isn't supported during network boot. In my case, this also puts the nodes on the LAN vlan - which is currently the VLAN that `deploy` is on.
@@ -611,6 +618,7 @@ Deploy all software to the storage and compute nodes. Finally, apply the network
 Move the deploy VM from the build node to the networking cluster. Since this is more of a tool VM, we'll keep it off the main compute cluster.
 
 Form the compute cluster. On `cnode1`
+
 ```
 sudo incus admin init
 Would you like to use clustering? (yes/no) [default=no]: yes
@@ -708,7 +716,4 @@ cluster:
   server_address: 10.168.1.43:8443
   cluster_token: ""
   cluster_certificate_path: ""
-
 ```
-
-
