@@ -1,5 +1,13 @@
 # Infrastructure
 
+## Hardware
+- (9) PCs, each group of 3 should be identical
+- (18) patch cords
+- 24-port managed ethernet switch
+- (9) USB 3.0 Ethernet Adapters
+- USB 3.0 Flash Drive - 8GB+, if formatted ext4/exFAT/FAT32 does not need reformatted (Slackware Files USB Drive)
+- USB Flash Drive - any size, will be erased (Slackware Boot USB Drive)
+
 ## Static Mirror
 
 ### Initial Download
@@ -9,6 +17,8 @@ The first thing we need to do is create a static image of the Slackware-current 
 ```
 rsync -havP --delete --delete-after  --no-o --no-g --safe-links  --timeout=60 --contimeout=30 --exclude "EFI/*" --exclude "extra/*" --exclude "pasture/*" --exclude "patches/*"  --exclude "source/*"  --exclude "testing/*" rsync://mirrors.kernel.org/slackware/slackware64-current /mnt/c/Users/user/Downloads/
 ```
+
+
 
 ### Slackware Installer USB
 
@@ -82,7 +92,7 @@ Next, start the reverse proxy and Jenkins. The reverse proxy requires `sudo` so 
 
 ```bash
 ./build-system.sh start jenkins
-sudo ./build-system.sh start rp
+./build-system.sh start rp # Requires sudo
 ```
 
 #### Jenkins Configuration
@@ -137,12 +147,22 @@ qemu-stack (QEMU and support libraries)
 
 Note - Ceph takes about 90 minutes to build on a decent computer. You will need at least 16GB of RAM (probably more) to compile Ceph.
 
+### Incus on Build Node (with Ansbile)
+```bash
+# Replace <build number> with your latest successful build number
+cd ~/build-system/jenkins/jobs/mgmt-tools/builds/<build number>/archive/
+sudo installpkg *.txz
+```
+
+
 ### Incus on Build Node
 
-The next step is create a deployment node that will used to network boot and deploy software to the other nodes. The deployment node will be a virtual machine, so we need to get Incus running on the build node. To do this, we need to install the packages from qemu-stack and incus-stack.
+The next step is create a deployment node that will used to network boot and deploy software to the other nodes. The deployment node will be a virtual machine, so we need to get Incus running on the build node. To do this, we need to install the packages from qemu-stack and incus-stack. Since this build of Qemu depends on Ceph, ceph-stack will need installed too.
 
 ```bash
 # Replace <build number> with your latest successful build number
+cd ~/build-system/jenkins/jobs/ceph-stack/builds/<build number>/archive/
+sudo installpkg *.txz
 cd ~/build-system/jenkins/jobs/qemu-stack/builds/<build number>/archive/
 sudo installpkg *.txz
 cd ~/build-system/jenkins/jobs/incus-stack/builds/<build number>/archive/
