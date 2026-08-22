@@ -1,0 +1,53 @@
+#!ipxe
+#
+# boot.ipxe — served over HTTP by deploy, node fetched by iPXE after it chainloads
+# from the UEFI firmware. It boots the Slackware installer (generic.s kernel + our
+# CUSTOM initrd that auto-runs autoinstall.sh) and tells it where to find the
+# package tree and this node's config.
+#
+# iPXE variables used:
+#   ${proxydhcp/next-server}  he proxyDHCP (dnsmasq) box that served this
+#                             script. NOT ${next-server}: under proxyDHCP that is
+#                             the real DHCP server's siaddr (the lease box), not the
+#                             boot box. 
+#   ${mac}           this NIC's MAC, e.g. 00:11:22:33:44:55
+#   ${mac:hexhyp}    MAC as 00-11-22-33-44-55 (used to pick the per-node config)
+
+set srv 10.168.1.100
+
+# Locations on deploy node:
+#   http://srv/mirror/...        the frozen Slackware mirror (kernels live here)
+#   http://srv/initrd-auto.img   our customized installer initrd
+#   http://srv/nodes/<mac>.cfg   per-node config (NODE_ROLE/NODE_NAME/pubkey)
+#   nfs  srv:/srv/slackware/...   package tree (mounted by the initrd hook)
+set mirror http://${srv}/mirror
+set src ${srv}:/srv/slackware/slackware64-current
+set nodecfg http://${srv}/nodes/${mac:hexhyp}.cfg
+set tagurl http://${srv}/tagsets/mini-gui
+
+echo
+echo == Cluster provisioning ==
+echo MAC ${mac}   IP ${ip}   server ${srv}
+echo Loading Slackware installer...
+echo
+
+# generic.s kernel from the mirror
+# auto-run initrd from the PXE dir
+# Cmdline params:
+#   kbd=us              skip the interactive keyboard-map prompt (rc.S blocks w/o it)
+#   nic=auto:eth0:dhcp  installer init (SeTnet) brings the NIC up before NFS/HTTP
+#   autoinstall=1       trigger the hook (omit it for a normal installer shell)
+#   slack.src=          NFS path the hook mounts at /source
+#   node.cfg=           per-node config URL autoinstall.sh sources
+#   tag.url=            base URL of the tagset; autoinstall.sh fetches
+#                       <tag.url>/<series>/tagfile per series at install time
+#   (optional) instrootpw=<pw>  set installer root pw so dropbear allows SSH login
+kernel ${mirror}/kernels/generic.s/bzImage initrd=initrd-auto.img \
+    kbd=us nic=auto:eth0:dhcp autoinstall=1 slack.src=${src} node.cfg=${nodecfg} tag.url=${tagurl} || goto fail
+initrd http://${srv}/initrd-auto.img || goto fail
+boot || goto fail
+
+:fail
+echo
+echo !! Boot failed — dropping to an iPXE shell for debugging.
+shell
