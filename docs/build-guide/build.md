@@ -14,10 +14,22 @@
 
 The first thing we need to do is create a static image of the Slackware-current mirror. Since the mirror updates as much as daily, we need a local static copy. Since we don't necessarily have a Slackware computer at this point, let's make this as OS agnostic as possible. Slackware can be downloaded with rsync. This should work on Windows (with WSL), Linux, or Mac OS.
 
+On Linux:
+```bash
+sudo mkdir -p /mnt/usb
+sudo mount /dev/sdc1 /mnt/usb
+sudo rsync -havP --delete --delete-after  --no-o --no-g --safe-links  --timeout=60 --contimeout=30 --exclude "EFI/*" --exclude "extra/*" --exclude "pasture/*" --exclude "patches/*"  --exclude "source/*"  --exclude "testing/*" rsync://mirrors.kernel.org/slackware/slackware64-current /mnt/usb
 ```
-rsync -havP --delete --delete-after  --no-o --no-g --safe-links  --timeout=60 --contimeout=30 --exclude "EFI/*" --exclude "extra/*" --exclude "pasture/*" --exclude "patches/*"  --exclude "source/*"  --exclude "testing/*" rsync://mirrors.kernel.org/slackware/slackware64-current /mnt/c/Users/user/Downloads/
-```
+![Screenshot of commands for Linux](mirror-rsync-linux.png)
+![Screenshot of commands for Linux after completion](mirror-rsync-linux-finished.png)
 
+On Windows (WSL):
+```bash
+sudo mount -t drvfs J: /mnt/j
+sudo rsync -havP --delete --delete-after  --no-o --no-g --safe-links  --timeout=60 --contimeout=30 --exclude "EFI/*" --exclude "extra/*" --exclude "pasture/*" --exclude "patches/*"  --exclude "source/*"  --exclude "testing/*" rsync://mirrors.kernel.org/slackware/slackware64-current /mnt/j
+```
+![Screenshot of commands for Windows](mirror-rsync-wsl.png)
+![Screenshot of commands for Windows after completion](mirror-rsync-wsl-finished.png)
 
 
 ### Slackware Installer USB
@@ -25,7 +37,8 @@ rsync -havP --delete --delete-after  --no-o --no-g --safe-links  --timeout=60 --
 Since there is not infrastructure at this point, we need to create a USB flash drive to use to install Slackware onto the build node. To do this we need to write `slackware64-current/usb-and-pxe-installers/usbboot.img` to a USB drive. On a Unix-like OS, this can be done with `dd`. On Windows, this should probably be done with a program like Rufus.
 
 ```
-dd if=usbboot.img of=/dev/sdb
+mount -t ntfs3 /dev/sdc1 /mnt/usb
+dd if=/mnt/usb/slackware64-current/usb-and-pxe-installers/usbboot.img of=/dev/sdd status=progress bs=4096
 ```
 
 ### Slackware Static Mirror USB
@@ -48,7 +61,7 @@ useradd -d /home/clusteradm -g users -u 1050 -m -s /bin/bash clusteradm
 In addiition, we need to grant `sudo` access to the `clusteradm` account. The path includes `go` - it is not yet installed, but will be soon. Edit `/etc/sudoers.d/clusteradm` as follows:
 
 ```
-#Defaults secure_path="/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin:/opt/go/bin"
+Defaults secure_path="/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin:/opt/go/bin"
 clusteradm ALL=(ALL:ALL) ALL
 ```
 
@@ -120,18 +133,18 @@ In Jenkins, click "+ New Item". Call the new item "dev-tools" and choose "Pipeli
 
 The dev-tools do not install as part of the Jenkinsfile. To build the software needed for the cluster, we'll need to install Go and JDK 21 on the build node to build the rest of the software. 
 
-```
+```bash
 # Note that <build number> may change depending on
 # how many builds you perform
 cd ~build-system/jenkins/jobs/dev-tools/builds/<build number>/archive/
 
 # Note that package versions may change
-sudo installpkg go-1.26.5-x86_64-1_SBo.txz temurin-jdk21-21.0.11+10-x86_64-1_SBo.txz
+sudo installpkg go-1.27.0-x86_64-1_SBo.txz temurin-jdk21-21.0.12.1+1-x86_64-1_SBo.txz
 ```
 
 The yarn build system also needs installed. Yarn can be installed via npm corepack. This is required for the incus-stack to build correctly.
 
-```
+```bash
 sudo npm install -g corepack
 ```
 
@@ -139,25 +152,90 @@ sudo npm install -g corepack
 
 Now, we can go back to Jenkins and build an install additional package "stacks". Next will be the management tools. Click " + New Item". Call the new item "mgmt-tools" and instead of choosing an item type, click "Duplicate and existing item." Type "dev-tools" and click OK. The job will created with the settings from dev-tools. Change "Script Path" to `mgmt-tools.Jenkinsfile`. Save the job and build it. Continue with these additional stacks. This is a recommended build order. Make sure Ceph is built before QEMU, otherwise the order isn't really important.
 
-storage-stack (LINSTOR, ZFS, DRBD)
-ovn-stack (Open vSwitch and OVN)
-incus-stack (Incus and support tools)
-ceph-stack (Ceph)
-qemu-stack (QEMU and support libraries)
+- mgmt-tools (Ansible, OpenTofu)
+- storage-stack (LINSTOR, ZFS, DRBD)
+- ovn-stack (Open vSwitch and OVN)
+- incus-stack (Incus and support tools)
+- ceph-stack (Ceph)
+- qemu-stack (QEMU and support libraries)
 
 Note - Ceph takes about 90 minutes to build on a decent computer. You will need at least 16GB of RAM (probably more) to compile Ceph.
 
-### Incus on Build Node (with Ansbile)
+### Install Incus on Build Node
+Incus can be installed manually or with Ansible. Ansible is preferred. Perform one set of steps only.
+
+#### Incus on Build Node (with Ansbile)
+The next step is create a deployment node that will used to network boot and deploy software to the other nodes. The deployment node will be a virtual machine, so we need to get Incus running on the build node. To do this, we need to install the packages from qemu-stack and incus-stack. Since this build of Qemu depends on Ceph, ceph-stack will need installed too. We'll do this using the same Ansible playbooks that will be used for node deployment. First, install Ansible.
+
 ```bash
-# Replace <build number> with your latest successful build number
-cd ~/build-system/jenkins/jobs/mgmt-tools/builds/<build number>/archive/
-sudo installpkg *.txz
+sudo installpkg ~/build-system/jenkins/workspace/mgmt-tools/ansible*.txz
+```
+
+Now clone the ansible playbooks into the `build-system` directory.
+```bash
+cd ~/build-system
+git clone https://github.com/scottr131/ansible.git --depth=1
+```
+
+Create a basic Ansible inventory. Edit `~/build-system/ansible/hosts.ini`:
+```
+[deploynode]
+buildhost ansible_user=clusteradm ansible_host=localhost
+```
+
+Generate a host key and trust it
+```bash
+ssh-keygen
+cat ~/.ssh/id_ed25519.pub >> ~/.ssh/authorized_keys
+```
+
+Create an API key in Jenkins. Edit the script to reflect your API key. Collect packages.
+```bash
+./collect_packages-api.sh ceph-stack dev-tools incus-stack mgmt-tools ovn-stack qemu-stack storage-stack utils-stack
+```
+
+Config files are currently stored in a seperate repository. Clone that and copy the config files into the ansible directory.
+```bash
+cd ~/build-system
+git clone https://github.com/scottr131/linux.git
+```
+
+Now, install the Ceph, Qemu, and Incus stacks onto the build node by running the Ansible playbooks. Ceph won't be used, but this version of QEMU is linked against it, so it needs to be installed.
+
+```bash
+cd ~/build-system/ansible
+ansible-playbook -i hosts.ini -e "target_hosts=buildhost" ceph/ceph-on-slackware.yaml
+ansible-playbook -i hosts.ini -e "target_hosts=buildhost" qemu/qemu-on-slackware.yaml
+ansible-playbook -i hosts.ini -e "target_hosts=buildhost" incus/incus-on-slackware.yaml
+ansible-playbook -i hosts.ini -e "target_hosts=buildhost" incus/incus-groups.yaml
+ansible-playbook -i hosts.ini -e "target_hosts=buildhost" local-config/local-config.yaml
+```
+
+Finally, we need to create a local network bridge to allow the VMs to connect to the LAN. Edit `/etc/rc.d/rc.inet1.conf`. In most cases you can just add two lines to create a bridge on eth0.
+
+```bash
+# IPv4 config options for eth0:
+IPADDRS[0]="10.1.31.18/24"
+USE_DHCP[0]=""
+# IPv6 config options for eth0:
+IP6ADDRS[0]=""
+USE_SLAAC[0]=""
+USE_DHCP6[0]=""
+# Generic options for eth0:
+DHCP_HOSTNAME[0]=""
+
+## Add these lines
+BRNICS[0]="eth0"
+IFNAME[0]="br-lan"
 ```
 
 
-### Incus on Build Node
+At this point, the system needs restarted for the CGROUPS version change to take effect. The incus daemon should come up automatically after restart. Skip the next section on manual installation, as Incus has been installed.
 
-The next step is create a deployment node that will used to network boot and deploy software to the other nodes. The deployment node will be a virtual machine, so we need to get Incus running on the build node. To do this, we need to install the packages from qemu-stack and incus-stack. Since this build of Qemu depends on Ceph, ceph-stack will need installed too.
+
+#### Incus on Build Node (Manual Installation)
+
+**These steps are only necessary if Incus was NOT installed via Ansible.** The next step is create a deployment node that will used to network boot and deploy software to the other nodes. The deployment node will be a virtual machine, so we need to get Incus running on the build node. To do this, we need to install the packages from qemu-stack and incus-stack. Since this build of Qemu depends on Ceph, ceph-stack will need installed too.
 
 ```bash
 # Replace <build number> with your latest successful build number
@@ -171,7 +249,7 @@ sudo installpkg *.txz
 
 Install configuration files
 
-```
+```bash
 cd ~
 wget https://github.com/scottr131/linux/raw/refs/heads/main/slackware/etc/rc.d/rc.local
 wget https://github.com/scottr131/linux/raw/refs/heads/main/slackware/etc/rc.d/rc.incusd
@@ -223,9 +301,12 @@ BRNICS[0]="eth0"
 IFNAME[0]="br-lan"
 ```
 
-Reboot the build node so that the cgroups and networking changes can take effect. The build node should come up with `incusd` running.
+Reboot the build node so that the cgroups and networking changes can take effect. The build node should come up with `incusd` running. Continue with the instructions immediately below.
 
-Now we need to configure Incus.
+### Configure Incus on Build Node
+
+** Resume here after installing Incus **
+Now we need to configure Incus.  
 
 ```bash
 sudo incus admin init
@@ -251,7 +332,7 @@ Would you like a YAML "init" preseed to be printed? (yes/no) [default=no]:
 
 Verfiy network connectivity by configuring local user client.
 
-```
+```bash
 sudo incus config trust add localhost
 # incus will return a token
 incus remote add localhost
@@ -260,7 +341,7 @@ incus remote add localhost
 
 Verify server operation.
 
-```
+```bash
 incus remote switch localhost
 incus list
 # This should return an empty list of instances
@@ -268,13 +349,21 @@ incus list
 
 #### Deployment Node (VM)
 
+#### Preparation
+
+Create a `usb` mountpoint and mount the Slackware files USB flash drive.
+```bash
+sudo mkdir -p /mnt/usb
+sudo mount /dev/sdg1 /mnt/usb
+```
+
 Create the VM and import the Slackware installer USB image.
 
-```
+```bash
 # Create the VM
 incus create --empty deploy --vm -s default -c limits.memory=4GiB -c limits.cpu=2 -d root,size=32GiB
 # Import the slackware installer image (not technically an ISO, but it will import this way)
-incus storage volume import default /mnt/hd/slackware64-current/usb-and-pxe-installers/usbboot.img slackware-install --type=iso
+incus storage volume import default /mnt/usb/slackware64-current/usb-and-pxe-installers/usbboot.img slackware-install --type=iso
 # Attach the Slackware USB to the deploy VM
 incus storage volume attach default slackware-install deploy installer
 # Set the deploy VM to boot from the USB installer
@@ -286,6 +375,12 @@ You will need to connect a remote Incus client or configure the web interface in
 ##### Install OS
 
 Connect the USB flash drive of Slackware files to the VM. Boot the VM and connect to the console. Install Slackware in a manner similar to the build node. This time only install package series a, ap, l, n, tcl, x, xap, and xfce from the `mini-gui` tagfiles. Configure the VM with a hostname of `deploy` and a static IP address appropriate for your LAN. Just as with the build node, you will need to create the cluster account `clusteradm`.
+
+```bash
+# These are examples and will need to be modified.
+incus config device add deploy usb1 usb busnum=1 devnum=5
+incus start deploy --console=vga
+```
 
 ##### Configure Deployment Node
 
@@ -334,11 +429,12 @@ As `clusteradm`, create the directory tree and own it. Copy the scripts and tags
 
 ```
 mkdir ~/scripts
-sudo mount /dev/sdb1 /mnt/hd
+sudo mkdir -p /mnt/usb
+sudo mount /dev/sdb1 /mnt/usb
 sudo mkdir -p /srv/pxe/nodes /srv/slackware/tagsets /srv/tftp
 sudo chown -R clusteradm /srv/pxe /srv/slackware /srv/tftp
-cp /mnt/hd/scripts/* ~/scripts/
-cp -R /mnt/hd/tagsets/* /srv/slackware/tagsets
+#cp /mnt/hd/scripts/* ~/scripts/
+cp -R /mnt/usb/tagfiles/* /srv/slackware/tagsets
 ```
 
 ##### Copy Local Mirror
@@ -346,7 +442,7 @@ cp -R /mnt/hd/tagsets/* /srv/slackware/tagsets
 Now we'll use rsync to copy the Slackware mirror. This same command can be used later to synchronize the Slackware mirror from a USB flash drive.
 
 ```
-rsync -havP --delete --delete-after  --no-o --no-g --safe-links  --timeout=60  --exclude "EFI/*" --exclude "extra/*" --exclude "pasture/*" --exclude "patches/*"  --exclude "source/*"  --exclude "testing/*" /mnt/hd/slackware64-current /srv/slackware
+rsync -havP --delete --delete-after  --no-o --no-g --safe-links  --timeout=60  --exclude "EFI/*" --exclude "extra/*" --exclude "pasture/*" --exclude "patches/*"  --exclude "source/*"  --exclude "testing/*" /mnt/usb/slackware64-current /srv/slackware
 ```
 
 ##### Configure Network Boot
