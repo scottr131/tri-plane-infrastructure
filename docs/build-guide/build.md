@@ -425,15 +425,32 @@ Restart the `deploy` instance (`incus start deploy`). The USB should be reconnec
 
 The node-specific config directory is actually `/srv/pxe/nodes`. This document will have a companion repository that contains scripts and config files. The location is yet to be determined. For the moment, assume the Slackware flies USB drive contains a `scripts` directory with deployment related scripts and a `conf` directory that contains various configuration file templates.
 
-As `clusteradm`, create the directory tree and own it. Copy the scripts and tagsets off the USB.
+As `clusteradm`, create the directory tree and own it. 
 
 ```
-mkdir ~/scripts
-sudo mkdir -p /mnt/usb
-sudo mount /dev/sdb1 /mnt/usb
 sudo mkdir -p /srv/pxe/nodes /srv/slackware/tagsets /srv/tftp
 sudo chown -R clusteradm /srv/pxe /srv/slackware /srv/tftp
-#cp /mnt/hd/scripts/* ~/scripts/
+```
+
+Clone the tri-plane-infrastructure
+```
+cd ~
+rm main.zip
+wget https://github.com/scottr131/tri-plane-infrastructure/archive/refs/heads/main.zip
+unzip main.zip
+mv tri-plane-infrastructure-main/ tri-plane-infrastructure
+```
+
+Copy the scripts and tagfiles
+```
+cd ~
+mv tri-plane-infrastructure/scripts .
+```
+
+Mount the USB and copy the tagsets.
+```
+sudo mkdir -p /mnt/usb
+sudo mount /dev/sdb1 /mnt/usb
 cp -R /mnt/usb/tagfiles/* /srv/slackware/tagsets
 ```
 
@@ -459,7 +476,7 @@ This should result in an `ipxe` package in `/tmp/packages` - currently `/tmp/pac
 
 ```
 cp /usr/share/ipxe/bin-x86_64-efi/*.efi /srv/tftp/
-cp /mnt/hd/config/boot.ipxe /srv/pxe/
+cp ~/scripts/boot.ipxe /srv/pxe
 ```
 
 Edit `/srv/pxe/boot.ipxe`. If you followed the paths in this document you usually will just need to change the line that starts with `set srv` to point to the LAN IP address of the `deploy` VM. Additional documentation is in the config file itself.
@@ -499,7 +516,7 @@ cd build-system
 Make a local copy of the Caddyfile. We don't have a good place for it, so we'll put in the scripts directory for now.
 
 ```bash
-cp /mnt/hd/conf/caddy-pxe.conf ~/scripts/
+cp ~/tri-plane-infrastructure/conf/caddy-pxe.conf ~/scripts/
 ```
 
 Verify `~/scripts/pxe-boot-server.sh` is correct for your system
@@ -521,7 +538,7 @@ sudo /usr/sbin/dnsmasq -C /etc/dnsmasq.d/pxe.conf -d
 We also need to copy the dnsmasq config. This can probably be combined with the steps that copy caddy-pxe.conf and boot.ipxe. 
 
 ```bash
-sudo cp /mnt/hd/config/pxe.conf /etc/dnsmasq.d/
+sudo cp ~/tri-plane-infrastructure/conf/pxe.conf /etc/dnsmasq.d/
 ```
 
 Edit `/etc/dnsmasq.d/pxe.conf` and make sure the settings are right for your LAN. The key settings are `interface=`,  `dhcp-range=`, and `dhcp-boot=`. dnsmsaq will proxyDHCP with your existing DHCP server and allow network boot (in most cases). 
@@ -547,7 +564,7 @@ Next, we need to set up NFS to serve the Slackware package mirror. Edit `/etc/ex
 
 Make sure to replace `192.168.1.0` with your LAN's address.  Enable and start NFS, then reload the exports (just in case).
 
-```
+```bash
 sudo chmod +x /etc/rc.d/rc.rpc /etc/rc.d/rc.nfsd
 sudo /etc/rc.d/rc.rpc start
 sudo /etc/rc.d/rc.nfsd start
@@ -577,7 +594,7 @@ Start the dnsmasq and caddy servers. This is best done in a tmux session.
 Create a configuration file for the first cluster node - a networking node - `nnode1`. Edit `/srv/pxe/nodes/<mac addr>.cfg` where `<mac addr>` is the hypen-separated MAC address of the target node. ** Make sure you have a valid SSH pubkey in this file. This will be your only way into the target node **
 
 ```
-NODE_ROLE="compute"        # or "storage" �.. picks the OS disk + partition layout
+NODE_ROLE="compute"        # compute = root on nvme0n1, storage = root on sda
 NODE_NAME="provisionn1"
 CLUSTERADM_PUBKEY="ssh-ed25519 AAAAC3NzaC1lZDI1NTEsAAAAIBwdl67NEdcb30yKG6Sp+VfzfrbcTlg771jhVh5WShCz4 clusteradm@build34.example.net"
 TIMEZONE="America/New_York"   # default UTC
@@ -606,7 +623,7 @@ Boot the node into UEFI network boot. You should see iPXE boot followed by the L
 
 Repeat this process with the other two network nodes. You could go ahead and install software on all 9 nodes now if it is more convenient.
 
-The newly installed nodes should come up and grab an IP address from DHCP. You should be able to SSH into them from `deploy` by their hostnames (which should get registered automatically when the node obtains an IP). 
+The newly installed nodes should come up and grab an IP address from DHCP. You should be able to SSH into them from `deploy` by their hostnames (which should get registered automatically when the node obtains an IP). During the install phase, I prefix the hostnames with `p-` to indicate they are "provisioning" and have a DHCP IP address. The final hostname and network configuration will be performed later by Ansible.
 
 Back on `deploy` we need to get Ansible and Semaphore running to start deploying software to the nodes.
 
@@ -678,6 +695,7 @@ Since these are currently the only nodes in `provisionnode`, go ahead and deploy
 
 - Enable Intel IOMMU (or optionally Enable AMD IOMMU if the node is AMD)
 - Deploy Ceph (QEMU was compiled with Ceph, so we need Ceph installed)
+- Deploy QEMU
 - Deploy Incus
 - Create Incus Groups
 - Deploy Local Config
@@ -687,7 +705,7 @@ Now run the "Execute Command" task with `reboot` as the command, `provisionnode`
 
 After the nodes reboot, SSH into `nnode1` and initialize Incus.
 
-```
+```bash
 sudo incus admin init
 ...
 Would you like to use clustering? (yes/no) [default=no]: yes
@@ -707,13 +725,13 @@ Would you like a YAML "init" preseed to be printed? (yes/no) [default=no]:
 ...
 
 # Create tokens for the other nodes
-incus cluster add nnode2
-incus cluster add nnode3
+sudo incus cluster add nnode2
+sudo incus cluster add nnode3
 ```
 
-Repeat the process on `nnode2` and `nnode3`.
+Repeat the process on `nnode2` and `nnode3` using the tokens supplied above.
 
-```
+```text
 Would you like to use clustering? (yes/no) [default=no]: yes
 What IP address or DNS name should be used to reach this server? [default=192.168.130.53]: 10.168.1.53
 Are you joining an existing cluster? (yes/no) [default=no]: yes
@@ -727,7 +745,59 @@ Would you like a YAML "init" preseed to be printed? (yes/no) [default=no]:
 
 Deploy the router instances on the networking cluster. This is currently done by restoring the backups. TODO - document the process of creating the router images.
 
-Remove the internal ethernet port from the trunk on the switch for each of the compute and cluster nodes. The LACP truck isn't supported during network boot. In my case, this also puts the nodes on the LAN vlan - which is currently the VLAN that `deploy` is on.
+## Move Deploy Node to Network cluster
+
+Now is a good time to move the deploy mode VM into its final home in the network cluster. There it can be used to deploy software to the remaining 6 nodes and any future updates or configuration changes.
+
+First, copy the build node's SSH public key to one of the network nodes (nnode1 in this example). Use the "Add SSH pubkey" job in Semaphore. This will allow the build node to access nnode1 while the deploy node VM is shutdown. 
+
+On the build node, we need to add a trust for `nnode1`.
+```bash
+sudo incus config trust add local:nnode1
+```
+
+Next, ssh to nnode1 from the build node. This verifies the SSH key installed correctly. At this point, configure the build node as a remote, stop the deploy VM, move it, and start it back up.
+```bash
+ssh nnode1
+sudo incus remote add buildnode
+sudo incus stop nb:deploy
+sudo incus move nb:deploy deploy
+sudo incus network attach br-cluster deploy eth1
+sudo incus start deploy
+```
+
+## Reconfigure Boot Server for Cluster Network
+Now that the deploy node is running on the network plane, it needs to be reconfigured to act as a boot server on the cluster network instead of the customer LAN. On the deploy node, edit `/etc/rc.d/rc.inet1.conf` to add a static IP for the cluster network interface (added above).
+```bash
+IPADDRS[1]="10.168.1.100/24"
+# Depending on customer LAN configuration, you may want to change the gateway too
+```
+Restart the network interfaces to apply the changes with `sudo /etc/rc.d/rc.inet1 restart`.
+
+Edit `/etc/exports`
+```
+/srv/slackware/slackware64-current   10.168.1.0/24(ro,sync,no_subtree_check,root_squash)
+```
+Reload the NFS exports with `sudo exportfs -ra`.
+
+Edit `/etc/dnsmasq.d/pxe.conf` and make sure the settings are right for your LAN. The key settings are `interface=`,  `dhcp-range=`, and `dhcp-boot=`. dnsmsaq will proxyDHCP with the existing cluster DHCP server and allow network boot (in most cases). 
+```bash
+# Typical cluster network config
+interface=eth1
+dhcp-range=10.168.1.0,proxy
+dhcp-boot=tag:ipxe,http://10.168.1.100/boot.ipxe
+```
+
+Edit `/srv/pxe/boot.ipxe`. If you followed the paths in this document you usually will just need to change the line that starts with `set srv` to point to the LAN IP address of the `deploy` VM. Additional documentation is in the config file itself.
+```bash
+# Typical cluster network config
+set srv 10.168.1.100
+```
+
+The HTTP and TFTP servers shouldn't be running as the node was restarted when it was moved. Start those services using the scripts (I usually do this in a tmux session since I only run them during a deployment).
+
+
+In the cluster switch GUI/CLI, remove the internal ethernet port from the trunk on the switch for each of the compute and cluster nodes. The LACP truck isn't supported during network boot. Be careful with VLAN assignment for the unbonded port. It needs to connect untagged to the cluster VLAN for network boot to work correctly.
 
 Deploy all software to the storage and compute nodes. Finally, apply the networking configuration and shut the nodes down. Add the ports back to the trunks and power on the nodes. The nodes should now come up with a bonded interface and on the cluster LAN at their specified IP address (from hosts.ini).
 
