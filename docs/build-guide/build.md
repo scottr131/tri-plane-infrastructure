@@ -794,6 +794,12 @@ Edit `/srv/pxe/boot.ipxe`. If you followed the paths in this document you usuall
 set srv 10.168.1.100
 ```
 
+Edit `/etc/resolv.conf` to point to the cluster LAN DNS server (the router VM).
+```
+nameserver 10.168.1.1
+```
+
+
 The HTTP and TFTP servers shouldn't be running as the node was restarted when it was moved. Start those services using the scripts (I usually do this in a tmux session since I only run them during a deployment).
 
 
@@ -801,7 +807,19 @@ In the cluster switch GUI/CLI, remove the internal ethernet port from the trunk 
 
 Deploy all software to the storage and compute nodes. Finally, apply the networking configuration and shut the nodes down. Add the ports back to the trunks and power on the nodes. The nodes should now come up with a bonded interface and on the cluster LAN at their specified IP address (from hosts.ini).
 
-Move the deploy VM from the build node to the networking cluster. Since this is more of a tool VM, we'll keep it off the main compute cluster.
+#### Storage
+Ceph
+QEMU
+Incus
+
+#### Compute
+Ceph
+Linstor
+OVN
+QEMU
+Incus
+
+
 
 Form the compute cluster. On `cnode1`
 
