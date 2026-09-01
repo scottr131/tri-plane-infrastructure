@@ -20,13 +20,23 @@ resource "incus_instance" "osd2" {
       size = "48GiB"
     }
   }
+
+  device {
+    name = "sata"
+    type = "pci"
+    properties = {
+      address = "0000:00:17.0"
+    }
+  }
+
   
   device {
     name = "eth0"
     type = "nic"
     properties = {
-      nictype        = "bridged"
+      nictype       = "bridged"
       parent        = "br-cluster"
+      hwaddr        = "10:66:6a:01:77:dc"
     }
   }
 
@@ -34,7 +44,7 @@ resource "incus_instance" "osd2" {
     name = "eth1"
     type = "nic"
     properties = {
-      nictype        = "bridged"
+      nictype       = "bridged"
       parent        = "br-storage"
     }
   }
